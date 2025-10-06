@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mouse Trail Particles</title>
+  <style>
+    :root { --bg: #0b0f19; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; background: radial-gradient(1200px 800px at 70% 20%, #141b2d 0%, var(--bg) 60%);
+      overflow: hidden; cursor: crosshair; color: #9fb0ff; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial;
+    }
+    .ui { position: fixed; inset: 16px auto auto 16px; display:flex; gap:12px; align-items:center; font-size:14px; opacity:.8; }
+    .ui label { display:flex; align-items:center; gap:8px; }
+    .badge { position: fixed; right: 16px; bottom: 12px; font-size: 12px; opacity:.5 }
+    canvas { display:block; }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div class="ui" aria-hidden="true">
+    <label>Particles <input id="count" type="range" min="100" max="1500" step="50"></label>
+    <label>Trail <input id="trail" type="range" min="0.02" max="0.2" step="0.01"></label>
+    <label>Link <input id="link" type="range" min="60" max="200" step="10"></label>
+  </div>
+  <div class="badge">Move the mouse / touch • Click = burst</div>
+
+  <script>
+  (() => {
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+
+    // --- High-DPI canvas resize ---
+    const dpr = Math.max(1, Math.min(2.5, window.devicePixelRatio || 1));
+    let W = 0, H = 0;
+    function resize() {
+      W = Math.floor(window.innerWidth);
+      H = Math.floor(window.innerHeight);
+      canvas.width = Math.floor(W * dpr);
+      canvas.height = Math.floor(H * dpr);
+      canvas.style.width = W + 'px';
+      canvas.style.height = H + 'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // --- Controls ---
+    const countEl = document.getElementById('count');
+    const trailEl = document.getElementById('trail');
+    const linkEl = document.getElementById('link');
+    countEl.value = Math.min(900, Math.round((W*H)/1800));
+    trailEl.value = 0.06;
+    linkEl.value = 120;
+
+    // --- Mouse/Tap state ---
+    const mouse = { x: W/2, y: H/2, vx: 0, vy: 0, moved: false, down:false };
+    let prevX = mouse.x, prevY = mouse.y, lastMove = performance.now();
+
+    function setPointer(x, y) {
+      mouse.vx = x - mouse.x; mouse.vy = y - mouse.y;
+      mouse.x = x; mouse.y = y; mouse.moved = true; lastMove = performance.now();
+    }
+    window.addEventListener('mousemove', (e) => setPointer(e.clientX, e.clientY));
+    window.addEventListener('touchmove', (e) => {
+      const t = e.touches[0]; if (!t) return; setPointer(t.clientX, t.clientY);
+      e.preventDefault();
+    }, {passive:false});
+    window.addEventListener('mousedown', () => { mouse.down = true; burst(mouse.x, mouse.y, 80);});
+    window.addEventListener('mouseup', () => { mouse.down = false; });
+    window.addEventListener('click', () => burst(mouse.x, mouse.y, 120));
+
+    // --- Particle system ---
+    const particles = [];
+    const PI2 = Math.PI * 2;
+
+    function rand(min, max){ return Math.random() * (max - min) + min; }
+
+    class Particle {
+      constructor(x, y) {
+        this.x = x; this.y = y;
+        // initial velocity influenced by recent mouse velocity
+        const speed = rand(0.5, 3) + Math.hypot(mouse.vx, mouse.vy)*0.02;
+        const ang = rand(0, PI2);
+        this.vx = Math.cos(ang) * speed;
+        this.vy = Math.sin(ang) * speed;
+
+        this.life = rand(60, 180); // frames
+        this.age = 0;
+        this.size = rand(0.6, 2.2);
+        this.hue = (baseHue + rand(-12, 12) + this.x*0.02 + this.y*0.02) % 360;
+        this.alpha = 1;
+        this.lastX = x; this.lastY = y;
+      }
+      step() {
+        this.lastX = this.x; this.lastY = this.y;
+        // Gentle attraction to mouse position
+        const dx = mouse.x - this.x;
+        const dy = mouse.y - this.y;
+        const dist = Math.hypot(dx, dy) + 0.0001;
+        const force = Math.min(0.05, 50 / (dist*dist));
+        this.vx += dx * force; this.vy += dy * force;
+
+        // Slight drag & swirl
+        const drag = 0.98; this.vx *= drag; this.vy *= drag;
+        const swirl = 0.0025; // rotate velocity a bit for graceful curves
+        const svx = this.vx - this.vy * swirl * dist*0.02;
+        const svy = this.vy + this.vx * swirl * dist*0.02;
+        this.vx = svx; this.vy = svy;
+
+        this.x += this.vx; this.y += this.vy;
+        this.age++;
+        this.alpha = Math.max(0, 1 - this.age / this.life);
+        return this.age < this.life && this.x>-50 && this.x<W+50 && this.y>-50 && this.y<H+50;
+      }
+      draw(ctx) {
+        ctx.beginPath();
+        ctx.moveTo(this.lastX, this.lastY);
+        ctx.lineTo(this.x, this.y);
+        ctx.lineWidth = this.size;
+        ctx.strokeStyle = `hsla(${this.hue}, 85%, 70%, ${this.alpha})`;
+        ctx.stroke();
+
+        // Glow point
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.size*0.75, 0, PI2);
+        ctx.fillStyle = `hsla(${this.hue}, 95%, 75%, ${this.alpha})`;
+        ctx.fill();
+      }
+    }
+
+    // Emitters
+    function emit(x, y, n){ for(let i=0;i<n;i++) particles.push(new Particle(x,y)); }
+    function burst(x,y,n){ for(let i=0;i<n;i++){ const p = new Particle(x,y); p.vx*=rand(1.2,2.8); p.vy*=rand(1.2,2.8); particles.push(p);} }
+
+    // background trail fade
+    function fade(alpha){
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = `rgba(11,15,25,${alpha})`; // match --bg
+      ctx.fillRect(0,0,W,H);
+    }
+
+    // Link lines
+    function linkLines(maxDist){
+      ctx.lineWidth = 0.8;
+      for(let i=0;i<particles.length;i++){
+        const a = particles[i];
+        for(let j=i+1;j<i+12 && j<particles.length;j++){
+          const b = particles[j];
+          const dx = a.x - b.x, dy = a.y - b.y;
+          const d = Math.hypot(dx,dy);
+          if(d < maxDist){
+            const o = 1 - d/maxDist;
+            ctx.strokeStyle = `hsla(${(a.hue+b.hue)/2}, 80%, 65%, ${0.25*o})`;
+            ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+          }
+        }
+      }
+    }
+
+    // auto drift target if idle
+    function idleDrift(){
+      const t = performance.now()*0.0003;
+      const r = Math.min(W,H)*0.25;
+      const cx = W*0.5 + Math.cos(t*1.3)*r;
+      const cy = H*0.5 + Math.sin(t*0.9)*r*0.6;
+      const k = 0.05;
+      setPointer(mouse.x + (cx - mouse.x)*k, mouse.y + (cy - mouse.y)*k);
+    }
+
+    let baseHue = 215; // start in blue space
+    function animate() {
+      requestAnimationFrame(animate);
+
+      // Smoothly cycle base hue
+      baseHue = (baseHue + 0.06) % 360;
+
+      // Trail fade (lower alpha = longer trails)
+      fade(parseFloat(trailEl.value));
+
+      // Idle? gently move target
+      if (performance.now() - lastMove > 1200) idleDrift();
+
+      // Emit based on motion
+      const speed = Math.hypot(mouse.x - prevX, mouse.y - prevY);
+      const emission = Math.min(40, 2 + speed * 0.12);
+      emit(mouse.x, mouse.y, emission|0);
+      prevX = mouse.x; prevY = mouse.y;
+
+      // Keep particle count near target
+      const target = parseInt(countEl.value,10);
+      if (particles.length > target) particles.splice(0, particles.length - target);
+
+      // Update/draw
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        if (!p.step()) { particles.splice(i,1); continue; }
+        p.draw(ctx);
+      }
+
+      // Connection lines
+      ctx.globalCompositeOperation = 'lighter';
+      linkLines(parseInt(linkEl.value,10));
+    }
+
+    // Seed the scene
+    fade(1);
+    for(let i=0;i<300;i++) particles.push(new Particle(rand(0,W), rand(0,H)));
+    animate();
+  })();
+  </script>
+</body>
+</html>
